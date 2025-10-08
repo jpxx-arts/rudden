@@ -1,23 +1,32 @@
 use std::fmt;
 use std::str::FromStr;
-use clap::{Parser, ValueEnum};
+use clap::{Parser, Subcommand, Args};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 
-#[derive(Parser)]
+#[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Cli {
-    #[arg(value_enum)]
+    #[command(subcommand)]
     mode: Mode,
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+#[derive(Subcommand, Debug)]
 enum Mode {
     Check,
-    Add,
+    Add(AddArgs),
     Update,
     Rm,
     Show,
+}
+
+#[derive(Args, Debug)]
+struct AddArgs {
+    #[arg(short, long)]
+    message: String,
+
+    #[arg(short, long)]
+    importance: Option<String>,
 }
 
 #[derive(PartialEq, Eq, Debug)]
@@ -159,7 +168,7 @@ impl FromStr for Task {
 fn main() -> io::Result<()> {
     let cli = Cli::parse();
 
-    let rudden_file_path = "./.rudden";
+    let rudden_file_path = "./.rudden/.rudden";
     let mut to_do_list = ToDoList::load(rudden_file_path)?;
 
     match cli.mode {
@@ -177,7 +186,31 @@ fn main() -> io::Result<()> {
             to_do_list.save(rudden_file_path)?;
         }
 
-        Mode::Add => {}
+        Mode::Add(args) => {
+            println!("-> Modo 'Add' ativado!");
+
+            // 1. Acessando o argumento obrigatório 'message'
+            // Acessamos `args.message` diretamente, pois ele é do tipo String.
+            let commit = &args.message;
+            println!("   Mensagem da tarefa: '{}'", commit);
+
+            // 2. Lidando com o argumento opcional 'importance'
+            // Usamos `if let Some` para executar um código APENAS se o valor foi fornecido.
+            let importance = if let Some(imp) = &args.importance {
+                println!("Importancia definida");
+                imp.as_str()
+            } else {
+                println!("Importância não foi definida");
+                "Normal"
+            };
+
+
+            let mut tasks = OpenOptions::new()
+                .append(true)
+                .open(rudden_file_path)?;
+            
+            writeln!(tasks, "2,{},pending,{}", commit, importance).expect("Couldn't write in .rudden");
+        }
 
         Mode::Update => {}
 

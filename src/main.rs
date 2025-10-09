@@ -1,26 +1,48 @@
+use clap::{Args, Parser, Subcommand};
 use std::fmt;
-use std::str::FromStr;
-use clap::{Parser, ValueEnum};
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Error, ErrorKind, Write};
+use std::str::FromStr;
 
-#[derive(Parser)]
+#[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Cli {
-    #[arg(value_enum)]
+    #[command(subcommand)]
     mode: Mode,
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+#[derive(Subcommand, Debug)]
 enum Mode {
     Check,
-    Add,
-    Update,
-    Rm,
+    Add(AddArgs),
+    Update(UpdateArgs),
+    Rm(RmArgs),
     Show,
 }
 
-#[derive(PartialEq, Eq, Debug)]
+#[derive(Args, Debug)]
+struct AddArgs {
+    #[arg(short, long)]
+    message: String,
+    #[arg(short, long)]
+    importance: Option<String>,
+}
+
+#[derive(Args, Debug)]
+struct UpdateArgs {
+    id: u32,
+    #[arg(short, long)]
+    status: Option<String>,
+    #[arg(short, long)]
+    importance: Option<String>,
+}
+
+#[derive(Args, Debug)]
+struct RmArgs {
+    id: u32,
+}
+
+#[derive(PartialEq, Eq, Debug, Clone)]
 enum Status {
     Pending,
     Finished,
@@ -47,7 +69,7 @@ impl fmt::Display for Status {
     }
 }
 
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Eq, Debug, Clone)]
 enum Importance {
     Normal,
     Important,
@@ -86,7 +108,7 @@ impl ToDoList {
         match File::open(path) {
             Ok(file) => {
                 let reader = BufReader::new(file);
-                let tasks = reader
+                let tasks: Vec<Task> = reader
                     .lines()
                     .map_while(Result::ok)
                     .filter_map(|line| Task::from_str(&line).ok())
@@ -113,6 +135,7 @@ impl ToDoList {
     }
 }
 
+#[derive(Clone)]
 struct Task {
     id: u32,
     name: String,
@@ -124,10 +147,7 @@ impl Task {
     fn to_csv_line(&self) -> String {
         format!(
             "{},{},{},{}",
-            self.id,
-            self.name,
-            self.status,
-            self.importance
+            self.id, self.name, self.status, self.importance
         )
     }
 }
@@ -159,39 +179,157 @@ impl FromStr for Task {
 fn main() -> io::Result<()> {
     let cli = Cli::parse();
 
-    let rudden_file_path = "./.rudden";
-    let mut to_do_list = ToDoList::load(rudden_file_path)?;
+    let rudden_dir = "./.rudden";
+    fs::create_dir_all(rudden_dir)?;
+    let rudden_file_path = rudden_dir.to_string() + "/.rudden";
+
+    let mut to_do_list = ToDoList::load(&rudden_file_path)?;
 
     match cli.mode {
         Mode::Check => {
             let logs_path = "./.git/logs/HEAD";
-            let logs_content = fs::read_to_string(logs_path).expect("No local commits yet");
+            let logs_content = match fs::read_to_string(logs_path) {
+                Ok(content) => content,
+                Err(e) => {
+                    eprintln!("Error reading git logs: {}", e);
+                    return Err(e);
+                }
+            };
 
+            // REFACTOR:
+            /*
+             * This flag may seem unnecessary, but it serves to solve two problems:
+             *
+             * 1. (Borrow Checker) The primary reason: The `for` loop holds a mutable borrow
+             * on `to_do_list`. Calling `to_do_list.save()` inside the loop would require a
+             * simultaneous immutable borrow, which Rust's ownership rules forbid.
+             * The flag allows us to defer the save operation until after the mutable borrow's scope has ended.
+             *
+             * 2. (Performance) It ensures the potentially expensive file I/O from `.save()`
+             * is performed at most once, and only if at least one task was actually modified.
+             */
+            let mut tasks_updated = false;
             for task in &mut to_do_list.tasks {
                 if task.status == Status::Pending && logs_content.contains(&task.name) {
-                    println!("-> Task '{}' finished!", task.name);
+                    println!("Task '{}' finished!", task.name);
                     task.status = Status::Finished;
+                    tasks_updated = true;
                 }
             }
 
-            to_do_list.save(rudden_file_path)?;
-        }
-
-        Mode::Add => {}
-
-        Mode::Update => {}
-
-        Mode::Show => {
-            println!("Tasks:");
-            for task in to_do_list.tasks {
-                println!(
-                    "- [id: {}] {} (Status: {:?}, Importance: {:?})",
-                    task.id, task.name, task.status, task.importance
-                );
+            if tasks_updated {
+                to_do_list.save(&rudden_file_path)?;
+                println!("Tasks updated successfully.");
+            } else {
+                println!("No tasks to update.");
             }
         }
 
-        Mode::Rm => {}
+        Mode::Add(args) => {
+            let importance_str = args.importance.unwrap_or_else(|| "normal".to_string());
+            let importance = match importance_str.parse::<Importance>() {
+                Ok(imp) => imp,
+                Err(_) => {
+                    let err_msg = format!(
+                        "Error: '{}' is not a valid importance. Use 'normal', 'important', or 'urgent'.",
+                        importance_str
+                    );
+                    return Err(Error::new(ErrorKind::InvalidInput, err_msg));
+                }
+            };
+
+            let new_id = to_do_list.tasks.iter().map(|t| t.id).max().unwrap_or(0) + 1;
+
+            let new_task = Task {
+                id: new_id,
+                name: args.message,
+                status: Status::Pending,
+                importance,
+            };
+
+            to_do_list.tasks.push(new_task);
+            to_do_list.save(&rudden_file_path)?;
+            println!("Successfully added task with ID: {}", new_id);
+        }
+
+        Mode::Update(args) => {
+            let mut task_found = false;
+            for task in to_do_list.tasks.iter_mut() {
+                if task.id == args.id {
+                    // REFACTOR:
+                    /*
+                     * This flag may seem unnecessary, but it serves to solve two problems:
+                     *
+                     * 1. (Borrow Checker) The primary reason: The `for` loop holds a mutable borrow
+                     * on `to_do_list`. Calling `to_do_list.save()` inside the loop would require a
+                     * simultaneous immutable borrow, which Rust's ownership rules forbid.
+                     * The flag allows us to defer the save operation until after the mutable borrow's scope has ended.
+                     *
+                     * 2. (Performance) It ensures the potentially expensive file I/O from `.save()`
+                     * is performed at most once, and only if at least one task was actually modified.
+                     */
+                    task_found = true;
+                    if let Some(new_status_str) = args.status {
+                        match new_status_str.parse::<Status>() {
+                            Ok(new_status) => task.status = new_status,
+                            Err(_) => {
+                                let err_msg = format!(
+                                    "Error: '{}' is not a valid status. Use 'pending' or 'finished'.",
+                                    new_status_str
+                                );
+                                return Err(Error::new(ErrorKind::InvalidInput, err_msg));
+                            }
+                        }
+                    }
+                    if let Some(new_importance_str) = args.importance {
+                        match new_importance_str.parse::<Importance>() {
+                            Ok(new_importance) => task.importance = new_importance,
+                            Err(_) => {
+                                let err_msg = format!(
+                                    "Error: '{}' is not a valid importance. Use 'normal', 'important', or 'urgent'.",
+                                    new_importance_str
+                                );
+                                return Err(Error::new(ErrorKind::InvalidInput, err_msg));
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+
+            if task_found {
+                to_do_list.save(&rudden_file_path)?;
+                println!("Successfully updated task with ID: {}", args.id);
+            } else {
+                eprintln!("Error: Task with ID {} not found.", args.id);
+            }
+        }
+
+        Mode::Show => {
+            if to_do_list.tasks.is_empty() {
+                println!("No tasks to show.");
+            } else {
+                println!("There are {} Tasks:", to_do_list.tasks.len());
+                for task in &to_do_list.tasks {
+                    println!(
+                        "- [id: {}] {} (Status: {}, Importance: {})",
+                        task.id, task.name, task.status, task.importance
+                    );
+                }
+            }
+        }
+
+        Mode::Rm(args) => {
+            let initial_len = to_do_list.tasks.len();
+            to_do_list.tasks.retain(|task| task.id != args.id);
+
+            if to_do_list.tasks.len() < initial_len {
+                to_do_list.save(&rudden_file_path)?;
+                println!("Successfully removed task with ID: {}", args.id);
+            } else {
+                eprintln!("Error: Task with ID {} not found.", args.id);
+            }
+        }
     }
 
     Ok(())

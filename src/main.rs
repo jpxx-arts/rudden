@@ -1,14 +1,10 @@
-// src/main.rs
-
 use clap::Parser;
 use std::{fs, io};
 
-// Declara os módulos que farão parte do binário
 mod cli;
 mod commands;
 mod task;
 
-// Traz os tipos necessários para o escopo
 use cli::{Cli, Mode};
 use task::ToDoList;
 
@@ -21,7 +17,6 @@ fn main() -> io::Result<()> {
 
     let mut to_do_list = ToDoList::load(&rudden_file_path)?;
 
-    // O match agora apenas delega para a função correta
     match cli.mode {
         Mode::Check => {
             commands::check_tasks(&mut to_do_list, &rudden_file_path)?;

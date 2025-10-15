@@ -1,5 +1,3 @@
-// src/task.rs
-
 use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};

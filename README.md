@@ -25,3 +25,32 @@ Para ver todas as opções disponíveis e entender como usar o programa, execute
 ```
 
 > **Nota:** para executar em modo debug, utilize o comando cargo run -- desired_command
+
+---
+
+## 3\. Testes e Garantia de Qualidade
+
+O projeto possui uma suíte de testes unitários completa para garantir a qualidade e a estabilidade do código.
+
+### Executando os Testes
+
+Para executar todos os testes unitários, utilize o comando padrão do Cargo:
+
+```bash
+cargo test
+```
+
+### Análise de Cobertura de Testes
+
+Utilizamos `cargo-tarpaulin` para gerar relatórios de cobertura de testes. Para gerar o seu, siga os passos abaixo:
+
+```bash
+# 1. Instale a ferramenta (se ainda não tiver)
+cargo install cargo-tarpaulin
+
+# 2. Execute a análise na raiz do projeto
+# O relatório será gerado em formato HTML e LCOV
+cargo tarpaulin --ignore-tests --out Html --out Lcov
+```
+
+Após a execução, você pode abrir o arquivo `tarpaulin-report.html` em seu navegador para uma visualização interativa dos resultados.

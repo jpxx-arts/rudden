@@ -14,6 +14,13 @@ pub enum Mode {
     Update(UpdateArgs),
     Rm(RmArgs),
     Show,
+    Bench(BenchArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct BenchArgs {
+    #[arg(long, default_value = "1000")]
+    pub tasks: u32,
 }
 
 #[derive(Args, Debug)]

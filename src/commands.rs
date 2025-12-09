@@ -1,75 +1,95 @@
 use crate::cli::{AddArgs, RmArgs, UpdateArgs};
 use crate::task::{Importance, Status, ToDoList};
-use std::fs;
-use std::io::{self, Error, ErrorKind};
+use std::io;
+use std::path::Path;
+use std::process::Command;
 
-pub fn check_tasks(to_do_list: &mut ToDoList, file_path: &str) -> io::Result<()> {
-    let logs_path = "./.git/logs/HEAD";
-    let logs_content = fs::read_to_string(logs_path)?;
+/// Executes `git log` to get a string containing all commit subjects.
+fn get_git_log_subjects(repo_path: &Path) -> io::Result<String> {
+    let output = Command::new("git")
+        .arg("log")
+        .arg("--pretty=format:%s") // Get only the subject line of each commit
+        .current_dir(repo_path) // Run the command in the specified directory
+        .output()?;
 
-    if to_do_list.update_statuses_from_logs(&logs_content) {
-        to_do_list.save(file_path)?;
-        println!("Tasks updated successfully.");
-    } else {
-        println!("No tasks to update.");
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("Failed to execute git log: {}", stderr),
+        ));
     }
-    Ok(())
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-pub fn add_task(to_do_list: &mut ToDoList, args: AddArgs, file_path: &str) -> io::Result<()> {
-    let importance_str = args.importance.unwrap_or_else(|| "normal".to_string());
-    let importance = importance_str.parse::<Importance>().map_err(|()| {
-        let err_msg = format!("Error: '{importance_str}' is not a valid importance.");
-        Error::new(ErrorKind::InvalidInput, err_msg)
-    })?;
+/// Adds a new task to the list. Takes a reference to AddArgs.
+pub fn add_task(to_do_list: &mut ToDoList, args: &AddArgs) -> Result<String, String> {
+    let importance_str = args.importance.as_deref().unwrap_or("normal");
+    let importance = match importance_str.parse::<Importance>() {
+        Ok(imp) => imp,
+        Err(_) => return Err(format!("'{}' is not a valid importance. Use 'normal', 'important', or 'urgent'.", importance_str)),
+    };
 
-    let new_id = to_do_list.add_task(args.message, importance);
-    
-    to_do_list.save(file_path)?;
-    println!("Successfully added task with ID: {new_id}");
-    Ok(())
+    let new_id = to_do_list.add_task(args.message.clone(), importance);
+    Ok(format!("Successfully added task with ID: {}", new_id))
 }
 
-pub fn update_task(to_do_list: &mut ToDoList, args: UpdateArgs, file_path: &str) -> io::Result<()> {
-    let status = args.status
-        .map(|s| s.parse::<Status>())
-        .transpose()
-        .map_err(|()| Error::new(ErrorKind::InvalidInput, "Invalid status provided."))?;
+/// Updates an existing task's status or importance. Takes a reference to UpdateArgs.
+pub fn update_task(to_do_list: &mut ToDoList, args: &UpdateArgs) -> Result<String, String> {
+    let status = match args.status.as_deref().map(|s| s.parse::<Status>()).transpose() {
+        Ok(s) => s,
+        Err(_) => return Err("Invalid status provided. Use 'pending' or 'finished'.".to_string()),
+    };
 
-    let importance = args.importance
-        .map(|s| s.parse::<Importance>())
-        .transpose()
-        .map_err(|()| Error::new(ErrorKind::InvalidInput, "Invalid importance provided."))?;
+    let importance = match args.importance.as_deref().map(|s| s.parse::<Importance>()).transpose() {
+        Ok(i) => i,
+        Err(_) => return Err("Invalid importance provided. Use 'normal', 'important', or 'urgent'.".to_string()),
+    };
 
     if to_do_list.update_task(args.id, status, importance) {
-        to_do_list.save(file_path)?;
-        println!("Successfully updated task with ID: {}", args.id);
+        Ok(format!("Successfully updated task with ID: {}", args.id))
     } else {
-        eprintln!("Error: Task with ID {} not found.", args.id);
+        Err(format!("Task with ID {} not found.", args.id))
     }
-    Ok(())
 }
 
-pub fn remove_task(to_do_list: &mut ToDoList, args: RmArgs, file_path: &str) -> io::Result<()> {
+/// Removes a task from the list. Takes a reference to RmArgs.
+pub fn remove_task(to_do_list: &mut ToDoList, args: &RmArgs) -> Result<String, String> {
     if to_do_list.remove_task(args.id) {
-        to_do_list.save(file_path)?;
-        println!("Successfully removed task with ID: {}", args.id);
+        Ok(format!("Successfully removed task with ID: {}", args.id))
     } else {
-        eprintln!("Error: Task with ID {} not found.", args.id);
+        Err(format!("Task with ID {} not found.", args.id))
     }
-    Ok(())
 }
 
-pub fn show_tasks(to_do_list: &ToDoList) {
+/// Generates a string displaying all tasks.
+pub fn show_tasks(to_do_list: &ToDoList) -> Result<String, String> {
     if to_do_list.is_empty() {
-        println!("No tasks to show.");
+        return Ok("No tasks to show.".to_string());
+    }
+
+    let mut output = format!("There are {} Tasks:\n", to_do_list.tasks().len());
+    for task in to_do_list.tasks() {
+        let line = format!(
+            "- [id: {}] {} (Status: {}, Importance: {})\n",
+            task.id, task.name, task.status, task.importance
+        );
+        output.push_str(&line);
+    }
+    Ok(output.trim_end().to_string())
+}
+
+/// Checks git logs and updates task statuses by calling `git log`.
+pub fn check_tasks(to_do_list: &mut ToDoList, repo_path: &Path) -> io::Result<String> {
+    let logs_content = match get_git_log_subjects(repo_path) {
+        Ok(content) => content,
+        Err(e) => return Err(e),
+    };
+
+    if to_do_list.update_statuses_from_logs(&logs_content) {
+        Ok("Tasks updated successfully based on git logs.".to_string())
     } else {
-        println!("There are {} Tasks:", to_do_list.tasks().len());
-        for task in to_do_list.tasks() {
-            println!(
-                "- [id: {}] {} (Status: {}, Importance: {})",
-                task.id, task.name, task.status, task.importance
-            );
-        }
+        Ok("No tasks to update from git logs.".to_string())
     }
 }
